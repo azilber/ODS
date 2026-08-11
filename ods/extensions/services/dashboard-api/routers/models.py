@@ -1,3 +1,5 @@
+# FILE-SIZE-OK: pre-existing large router; splitting is out of scope for
+# targeted bug fixes. See docs/ODS_CLI_DECOMPOSITION.md-style follow-up.
 """Model Library router — browse, benchmark, and manage GGUF models."""
 
 import asyncio
@@ -497,6 +499,47 @@ def _verified_activation_context(loaded_model: str | None) -> int | None:
     except (TypeError, ValueError):
         return None
     return context if context > 0 else None
+
+
+def _read_model_state() -> dict:
+    # The host agent is the sole writer of model-state.json (switchboard mode).
+    # Mirror routers/model_state.py's path resolution (ODS_DATA_DIR override).
+    data_dir = os.environ.get("ODS_DATA_DIR") or DATA_DIR
+    path = Path(data_dir) / "model-state.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _switchboard_activation_complete(
+    current_model: str | None,
+    loaded_model: str | None,
+) -> bool:
+    """True when the switchboard reports the desired model fully active.
+
+    On switchboard hosts the host agent records completion in model-state.json
+    (via record_verified_route) and never writes the legacy activation receipt,
+    so this is the completion signal the dashboard must honor there.
+    """
+    if not current_model or not loaded_model:
+        return False
+    state = _read_model_state()
+    if state.get("schema") != "ods.model-state.v1" or state.get("operation") is not None:
+        return False
+
+    active = state.get("active")
+    if not isinstance(active, dict) or active.get("catalogId") != current_model:
+        return False
+
+    desired = state.get("desired")
+    if not isinstance(desired, dict) or desired.get("catalogId") != active.get("catalogId"):
+        return False
+
+    runtime_tokens = _model_name_tokens(active.get("runtimeModelId"))
+    loaded_tokens = _model_name_tokens(loaded_model)
+    return bool(runtime_tokens and loaded_tokens and runtime_tokens & loaded_tokens)
 
 
 def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]:
@@ -1366,7 +1409,10 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     payload["activationReadyModel"] = (
         payload.get("currentModel")
         if loaded_entry
-        and _activation_receipt_matches(payload.get("currentModel"), loaded_entry, loaded_model)
+        and (
+            _activation_receipt_matches(payload.get("currentModel"), loaded_entry, loaded_model)
+            or _switchboard_activation_complete(payload.get("currentModel"), loaded_model)
+        )
         else None
     )
     return payload

@@ -1,3 +1,4 @@
+# FILE-SIZE-OK: pre-existing large test module; splitting is out of scope.
 """Focused tests for the models router helpers."""
 
 from __future__ import annotations
@@ -1416,6 +1417,107 @@ def test_verified_context_receipt_supplies_runtime_context(monkeypatch, tmp_path
     assert models_router._verified_activation_context(
         "extra.Qwen3.5-2B-Q4_K_M.gguf"
     ) == 65536
+
+
+def _write_switchboard_state(
+    data_dir,
+    monkeypatch,
+    *,
+    catalog_id="qwen3.5-9b-q4",
+    runtime_model_id="Qwen3.5-9B-Q4_K_M.gguf",
+    operation=None,
+    desired_catalog_id=None,
+):
+    monkeypatch.setenv("ODS_DATA_DIR", str(data_dir))
+    (data_dir / "model-state.json").write_text(
+        json.dumps({
+            "schema": "ods.model-state.v1",
+            "seq": 3,
+            "routeSeq": 3,
+            "operation": operation,
+            "desired": {"catalogId": desired_catalog_id or catalog_id},
+            "active": {
+                "routeSeq": 3,
+                "catalogId": catalog_id,
+                "runtimeModelId": runtime_model_id,
+            },
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_switchboard_state_marks_activation_ready_without_receipt(monkeypatch, tmp_path):
+    # Switchboard hosts never write model-activation-receipt.json; completion is
+    # recorded only in model-state.json. The dashboard must still resolve.
+    models_router, _install_dir, data_dir = _patch_model_router_paths(
+        monkeypatch, tmp_path
+    )
+    _write_switchboard_state(data_dir, monkeypatch)
+
+    assert not (data_dir / "model-activation-receipt.json").exists()
+    assert models_router._switchboard_activation_complete(
+        "qwen3.5-9b-q4", "Qwen3.5-9B-Q4_K_M.gguf"
+    ) is True
+
+
+def test_switchboard_state_not_ready_while_operation_in_flight(monkeypatch, tmp_path):
+    models_router, _install_dir, data_dir = _patch_model_router_paths(
+        monkeypatch, tmp_path
+    )
+    _write_switchboard_state(data_dir, monkeypatch, operation="model_activation")
+
+    assert models_router._switchboard_activation_complete(
+        "qwen3.5-9b-q4", "Qwen3.5-9B-Q4_K_M.gguf"
+    ) is False
+
+
+def test_switchboard_state_not_ready_on_catalog_mismatch(monkeypatch, tmp_path):
+    models_router, _install_dir, data_dir = _patch_model_router_paths(
+        monkeypatch, tmp_path
+    )
+    _write_switchboard_state(data_dir, monkeypatch)
+
+    # currentModel differs from the active catalog id (activation not yet caught up)
+    assert models_router._switchboard_activation_complete(
+        "qwen3.5-2b-q4", "Qwen3.5-9B-Q4_K_M.gguf"
+    ) is False
+
+
+def test_switchboard_state_not_ready_on_desired_diverging_from_active(monkeypatch, tmp_path):
+    models_router, _install_dir, data_dir = _patch_model_router_paths(
+        monkeypatch, tmp_path
+    )
+    _write_switchboard_state(
+        data_dir, monkeypatch, desired_catalog_id="qwen3.5-2b-q4"
+    )
+
+    assert models_router._switchboard_activation_complete(
+        "qwen3.5-9b-q4", "Qwen3.5-9B-Q4_K_M.gguf"
+    ) is False
+
+
+def test_switchboard_state_not_ready_on_runtime_token_mismatch(monkeypatch, tmp_path):
+    models_router, _install_dir, data_dir = _patch_model_router_paths(
+        monkeypatch, tmp_path
+    )
+    _write_switchboard_state(data_dir, monkeypatch)
+
+    # llama-server reports a different GGUF than the switchboard recorded.
+    assert models_router._switchboard_activation_complete(
+        "qwen3.5-9b-q4", "Qwen3.5-2B-Q4_K_M.gguf"
+    ) is False
+
+
+def test_switchboard_state_missing_file_is_not_ready(monkeypatch, tmp_path):
+    models_router, _install_dir, data_dir = _patch_model_router_paths(
+        monkeypatch, tmp_path
+    )
+    monkeypatch.setenv("ODS_DATA_DIR", str(data_dir))
+
+    assert not (data_dir / "model-state.json").exists()
+    assert models_router._switchboard_activation_complete(
+        "qwen3.5-9b-q4", "Qwen3.5-9B-Q4_K_M.gguf"
+    ) is False
 
 
 def test_configured_context_empty_file_value_falls_through_to_file_max_context(

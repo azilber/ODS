@@ -1039,6 +1039,33 @@ describe('useModels', () => {
     expect(benchmarkCall[1].body).toContain('max_tokens')
   })
 
+  test('benchmarkModel stores tok/s and it survives a later poll that omits speed', async () => {
+    fetch.mockImplementation((url, opts) => {
+      if (opts?.method === 'POST' && String(url).includes('/benchmark')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ tokensPerSecond: 42 }) })
+      }
+      // The /api/models snapshot never carries the fresh benchmark value.
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ models: [{ id: 'qwen3.5-9b-q4' }], gpu: null, currentModel: 'qwen3.5-9b-q4' })
+      })
+    })
+
+    const { result } = renderHook(() => useModels())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      await result.current.benchmarkModel('qwen3.5-9b-q4')
+    })
+    expect(result.current.benchmarkResults['qwen3.5-9b-q4'].tokensPerSecond).toBe(42)
+
+    // A subsequent poll must not erase the freshly measured throughput.
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.benchmarkResults['qwen3.5-9b-q4'].tokensPerSecond).toBe(42)
+  })
+
   test('pauses 30s polling while the tab is hidden and refreshes on visibilitychange', async () => {
     fetch.mockResolvedValue({
       ok: true,

@@ -60,6 +60,7 @@ export default function Models() {
     models,
     gpu,
     currentModel,
+    benchmarkResults,
     configuredModel,
     odsMode,
     configuredMode,
@@ -330,6 +331,7 @@ export default function Models() {
         model={activeModel}
         currentModel={currentModel}
         gpu={gpu}
+        benchmarkOverride={activeModel ? benchmarkResults?.[activeModel.id] : undefined}
       />
 
       {!currentModel && configuredModel && (
@@ -417,6 +419,7 @@ export default function Models() {
                       key={rowId}
                       model={model}
                       gpu={gpu}
+                      benchmarkOverride={benchmarkResults?.[model.id]}
                       canActivateModels={canActivateModels}
                       activationModeError={activationModeError}
                       hermesMinimumContext={hermesMinimumContext}
@@ -474,9 +477,9 @@ export default function Models() {
   )
 }
 
-function CurrentModelPanel({ model, currentModel, gpu }) {
+function CurrentModelPanel({ model, currentModel, gpu, benchmarkOverride }) {
   const modelLabel = currentModel || model?.id
-  const speed = getSpeedDisplay(model)
+  const speed = getSpeedDisplay(model, benchmarkOverride)
   const context = model ? formatContext(model.contextLength) : '--'
   const memory = model ? getMemoryMeta(model, gpu) : null
   const statusLabel = currentModel ? 'Currently running' : 'Model runtime'
@@ -783,6 +786,7 @@ function FilterChip({ active, onClick, children }) {
 function ModelTableRow({
   model,
   gpu,
+  benchmarkOverride,
   canActivateModels,
   activationModeError,
   hermesMinimumContext,
@@ -801,7 +805,7 @@ function ModelTableRow({
   const isDownloaded = model.status === 'downloaded'
   const memory = getMemoryMeta(model, gpu)
   const compatibility = getCompatibilityMeta(model, memory, hermesMinimumContext)
-  const speed = getSpeedDisplay(model)
+  const speed = getSpeedDisplay(model, benchmarkOverride)
   const tags = getModelTags(model, hermesMinimumContext)
   const iconTone = getIconTone(model, compatibility)
   const performanceBadge = getPerformanceBadge(model)
@@ -1791,12 +1795,21 @@ function isHermesTalkVerified(compatibility) {
   return ['supported', 'verified'].includes(status)
 }
 
-function getSpeedDisplay(model) {
-  const rawValue = toNumber(model?.tokensPerSec) || extractTokensPerSecond(model?.performanceLabel)
+function getSpeedDisplay(model, benchmarkOverride) {
+  // A freshly measured benchmark (kept client-side in useModels) is preferred so
+  // it survives the next /api/models poll, which re-derives Speed server-side.
+  const overrideValue = toNumber(benchmarkOverride?.tokensPerSecond)
+  const hasOverride = overrideValue && overrideValue > 0 && overrideValue <= MAX_SINGLE_REQUEST_TOKENS_PER_SECOND
+  const rawValue = hasOverride
+    ? overrideValue
+    : (toNumber(model?.tokensPerSec) || extractTokensPerSecond(model?.performanceLabel))
   const value = rawValue && rawValue <= MAX_SINGLE_REQUEST_TOKENS_PER_SECOND ? rawValue : null
+  const label = value
+    ? (hasOverride ? `${formatNumber(value)} tok/s` : (model?.performanceLabel || `${formatNumber(value)} tok/s`))
+    : 'Benchmark required'
   return {
     value,
-    label: value ? (model?.performanceLabel || `${formatNumber(value)} tok/s`) : 'Benchmark required',
+    label,
     tone: model?.fitsVram === false ? 'orange' : 'purple',
   }
 }
