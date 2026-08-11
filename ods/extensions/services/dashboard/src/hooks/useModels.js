@@ -177,6 +177,10 @@ export function useModels() {
   const [fetchError, setFetchError] = useState(null)
   const [mutationError, setMutationError] = useState(null)
   const [pendingActions, setPendingActionsState] = useState([])
+  // Freshly measured benchmark throughput, keyed by model id. The server
+  // re-derives Speed from live/evidence metrics on every /api/models poll, so
+  // without this the just-measured value disappears on the next refresh.
+  const [benchmarkResults, setBenchmarkResults] = useState({})
   const pendingActionsRef = useRef([])
   const actionTokenRef = useRef(0)
   const modelsRequestRef = useRef(0)
@@ -285,7 +289,7 @@ export function useModels() {
     ? modelLifecycle.modelId
     : null
   const backendLifecycleBusy = Boolean(modelLifecycle?.active)
-  const pollInterval = pendingActions.some(action => action.kind === 'download' || action.kind === 'delete' || action.kind === 'load') || backendLifecycleBusy
+  const pollInterval = pendingActions.some(action => action.kind === 'download' || action.kind === 'delete' || action.kind === 'load' || action.kind === 'benchmark') || backendLifecycleBusy
     ? PENDING_MODEL_ACTION_POLL_MS
     : DEFAULT_POLL_MS
 
@@ -462,6 +466,14 @@ export function useModels() {
         body: JSON.stringify({ max_tokens: 128 })
       })
       if (!response.ok) throw new Error(await errorMessageFromResponse(response, 'Failed to benchmark model'))
+      const result = await response.json()
+      const tokensPerSecond = Number(result?.tokensPerSecond)
+      if (Number.isFinite(tokensPerSecond) && tokensPerSecond > 0) {
+        setBenchmarkResults(prev => ({
+          ...prev,
+          [modelId]: { tokensPerSecond, at: Date.now() },
+        }))
+      }
       await fetchModels()
     } catch (err) {
       setMutationError(err.message)
@@ -487,6 +499,7 @@ export function useModels() {
     models,
     gpu,
     currentModel,
+    benchmarkResults,
     activationReadyModel,
     configuredModel,
     modelLifecycle,
