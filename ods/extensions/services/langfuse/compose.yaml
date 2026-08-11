@@ -27,7 +27,15 @@ services:
       NEXTAUTH_SECRET: "${LANGFUSE_NEXTAUTH_SECRET}"
       SALT: "${LANGFUSE_SALT}"
       ENCRYPTION_KEY: "${LANGFUSE_ENCRYPTION_KEY}"
-      NEXTAUTH_URL: "http://localhost:${LANGFUSE_PORT:-3006}"
+      # Canonical origin for NextAuth callbacks/redirects. Langfuse (a Next.js
+      # app) bounces the browser to this host on sign-in, so a hardcoded
+      # "localhost" breaks LAN access — a device hitting http://<lan-ip>:3006
+      # gets redirected to localhost:3006 (dead from any other machine). The
+      # installer writes HOST_LAN_IP into .env only when BIND_ADDRESS=0.0.0.0
+      # (--lan), so loopback installs keep the localhost default and LAN
+      # installs advertise the routable IP. Same ${HOST_LAN_IP:-} pattern used
+      # by openclaw and dashboard-api.
+      NEXTAUTH_URL: "http://${HOST_LAN_IP:-localhost}:${LANGFUSE_PORT:-3006}"
       LANGFUSE_INIT_ORG_ID: "ods"
       LANGFUSE_INIT_ORG_NAME: "ODS"
       LANGFUSE_INIT_PROJECT_ID: "${LANGFUSE_INIT_PROJECT_ID}"
