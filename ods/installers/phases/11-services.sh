@@ -1054,6 +1054,14 @@ MODELS_INI_EOF
                 _hermes_base_url="http://litellm:4000/v1"
                 _hermes_api_key="${LITELLM_KEY:-}"
             fi
+            # Plain local install (not switchboard/cloud/external/AMD): none of
+            # the branches above match, leaving _hermes_base_url empty so the
+            # patcher never asserts base_url and Hermes relies on the template's
+            # literal default. Set it explicitly so the seeded config always
+            # points at the sibling llama-server container — otherwise an empty
+            # base_url makes Hermes fall back to its embedded Ollama runtime
+            # (tiny bundled model → "context too small for tool use").
+            [[ -z "$_hermes_base_url" ]] && _hermes_base_url="${HERMES_LLM_BASE_URL:-http://llama-server:8080/v1}"
             _hermes_context="${MAX_CONTEXT:-65536}"
             _hermes_request_timeout=180
             if [[ "$_hermes_switchboard_mode" == "enabled" ]]; then
@@ -1285,6 +1293,27 @@ MODELS_INI_EOF
                 $DOCKER_CMD exec ods-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
                     >>"$LOG_FILE" 2>&1 || \
                     warn "Could not sync installation-context SOUL.md into running Hermes container"
+            fi
+        fi
+
+        # Verify Hermes actually seeded ODS's config. The upstream image copies
+        # our patched cli-config.yaml.example into /opt/data/config.yaml ONLY
+        # when that file is absent (a `[ ! -f ]` guard in its stage2-hook). A
+        # stale config.yaml — e.g. left on the data volume by a --keep-data
+        # reinstall — therefore shadows ODS's config, and Hermes silently boots
+        # its built-in default (the tiny qwen2.5-0.5b model via embedded
+        # Ollama), which fails every tool call with "context too small". Detect
+        # that placeholder model and tell the operator exactly how to reset it;
+        # the check is read-only and only fires on the unambiguous upstream
+        # default, so a genuinely customized config is never flagged.
+        if [[ "${ENABLE_HERMES:-false}" == "true" ]] \
+            && $DOCKER_CMD ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-hermes'; then
+            if $DOCKER_CMD exec ods-hermes sh -c \
+                'grep -qE "^[[:space:]]*default:[[:space:]]*.?qwen2\.5-0\.5b" /opt/data/config.yaml' \
+                >/dev/null 2>&1; then
+                ai_warn "Hermes is running its built-in default model (embedded Ollama) — tool use will fail with \"context too small\"."
+                ai "  A stale data/hermes/config.yaml shadowed ODS's config (the image only seeds when config.yaml is absent)."
+                ai "  Reset it:  docker exec ods-hermes rm -f /opt/data/config.yaml && ods restart hermes"
             fi
         fi
     else

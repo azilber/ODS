@@ -237,6 +237,35 @@ docker exec ods-hermes curl -fs http://llama-server:8080/v1/models
 
 If that fails, the most likely cause is that the Hermes container isn't on ODS's docker network. Check `docker network inspect ods_default`.
 
+### Hermes logs `❌ Ollama runtime context is too small for Hermes tool use`
+
+Hermes is running its **built-in default model** (a tiny `qwen2.5-0.5b`
+served by the image's embedded Ollama) instead of ODS's `Qwen3.5-*` on
+`llama-server`. That model's context window is far below the 64K Hermes needs
+for tool calling, so every tool call fails.
+
+Root cause: the upstream image seeds `/opt/data/config.yaml` from ODS's patched
+`cli-config.yaml.example` **only when `config.yaml` does not already exist**. A
+stale `data/hermes/config.yaml` — typically left on the data volume by a
+`--keep-data` reinstall — shadows ODS's config, so Hermes boots the upstream
+default. Confirm:
+
+```bash
+docker exec ods-hermes grep -E "^  (default|base_url):" /opt/data/config.yaml
+# broken: default: qwen2.5-0.5b-instruct-q4_k_m.gguf  /  base_url: ''
+# good:   default: "Qwen3.5-9B-Q4_K_M.gguf"           /  base_url: "http://llama-server:8080/v1"
+```
+
+Fix — delete the stale config so ODS's seed is copied on the next start:
+
+```bash
+docker exec ods-hermes rm -f /opt/data/config.yaml && ods restart hermes
+```
+
+The installer prints this exact remediation at the end of an install when it
+detects the placeholder model. (Fresh, blank-volume installs seed the correct
+config automatically and are unaffected.)
+
 ### WhatsApp reports port 3000 already in use
 
 ODS's bundled Hermes config uses `platforms.whatsapp.extra.bridge_port: 3010`, and the Hermes container does not bind that bridge to the host. If you see a WhatsApp bridge conflict on port 3000, you are probably running Hermes Agent natively, running upstream Hermes with host networking, or using an older `data/hermes/config.yaml` copied before this default existed.

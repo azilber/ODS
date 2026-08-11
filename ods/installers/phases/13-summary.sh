@@ -37,6 +37,23 @@ fi
 # Get local IP for LAN access
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
 
+# Host to print in service URLs. When the stack is LAN-bound
+# (BIND_ADDRESS=0.0.0.0, set by --lan), every service is published on 0.0.0.0
+# and IS reachable over the LAN — so the summary must advertise the routable IP
+# instead of "localhost", which is dead from any other device. Prefer
+# HOST_LAN_IP (written to .env by phase 06 when LAN-bound) and fall back to the
+# detected LOCAL_IP. Loopback installs keep "localhost". Read BIND_ADDRESS from
+# .env (same source of truth as the "On your network" block below).
+DISPLAY_HOST="localhost"
+if [[ -f "$INSTALL_DIR/.env" ]]; then
+    _summary_bind=$(grep "^BIND_ADDRESS=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "")
+    if [[ "$_summary_bind" == "0.0.0.0" ]]; then
+        _summary_lan_ip=$(grep "^HOST_LAN_IP=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "")
+        [[ -z "$_summary_lan_ip" ]] && _summary_lan_ip="$LOCAL_IP"
+        [[ -n "$_summary_lan_ip" ]] && DISPLAY_HOST="$_summary_lan_ip"
+    fi
+fi
+
 # Mode is now stored in .env as ODS_MODE (set by phase 06)
 if ! $DRY_RUN; then
     mkdir -p "$INSTALL_DIR"
@@ -45,7 +62,7 @@ else
 fi
 
 # Show the cinematic success card
-show_success_card "http://localhost:3000" "http://localhost:3001" "$LOCAL_IP"
+show_success_card "http://${DISPLAY_HOST}:3000" "http://${DISPLAY_HOST}:3001" "$LOCAL_IP"
 
 # Mark the setup wizard as already completed for fresh installs. The
 # dashboard-api reads this file (container path /data/config/setup-complete.json,
@@ -140,19 +157,19 @@ bootline
 # Resolve OpenCode's configured port once (OPENCODE_PORT is documented in .env)
 OPENCODE_WEB_PORT="$(sed -n 's/^OPENCODE_PORT=//p' "$INSTALL_DIR/.env" | head -n1 | tr -d '"')"
 [[ "$OPENCODE_WEB_PORT" =~ ^[0-9]+$ ]] || OPENCODE_WEB_PORT=3003
-# Core services always shown
-echo "  • Chat UI:       http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
-echo "  • Dashboard:     http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
-echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
-[[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && echo "  • Perplexica:    http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
-[[ "${ENABLE_COMFYUI:-false}" == "true" ]] && echo "  • ComfyUI:       http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
-[[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes (auth): http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}  (magic-link gated; not direct :9119)"
-[[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://localhost:${SERVICE_PORTS[openclaw]:-7860}"
-systemctl --user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://localhost:${OPENCODE_WEB_PORT}"
-[[ "$ENABLE_VOICE" == "true" ]] && echo "  • Whisper STT:   http://localhost:${SERVICE_PORTS[whisper]:-9000}"
-[[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://localhost:${SERVICE_PORTS[tts]:-8880}"
-[[ "$ENABLE_WORKFLOWS" == "true" ]] && echo "  • n8n:           http://localhost:${SERVICE_PORTS[n8n]:-5678}"
-[[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && echo "  • Qdrant:        http://localhost:${SERVICE_PORTS[qdrant]:-6333}"
+# Core services always shown. DISPLAY_HOST is the LAN IP when --lan, else localhost.
+echo "  • Chat UI:       http://${DISPLAY_HOST}:${SERVICE_PORTS[open-webui]:-3000}"
+echo "  • Dashboard:     http://${DISPLAY_HOST}:${SERVICE_PORTS[dashboard]:-3001}"
+echo "  • LLM API:       http://${DISPLAY_HOST}:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
+[[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && echo "  • Perplexica:    http://${DISPLAY_HOST}:${SERVICE_PORTS[perplexica]:-3004}"
+[[ "${ENABLE_COMFYUI:-false}" == "true" ]] && echo "  • ComfyUI:       http://${DISPLAY_HOST}:${SERVICE_PORTS[comfyui]:-8188}"
+[[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes (auth): http://${DISPLAY_HOST}:${SERVICE_PORTS[hermes-proxy]:-9120}  (magic-link gated; not direct :9119)"
+[[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://${DISPLAY_HOST}:${SERVICE_PORTS[openclaw]:-7860}"
+systemctl --user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://${DISPLAY_HOST}:${OPENCODE_WEB_PORT}"
+[[ "$ENABLE_VOICE" == "true" ]] && echo "  • Whisper STT:   http://${DISPLAY_HOST}:${SERVICE_PORTS[whisper]:-9000}"
+[[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://${DISPLAY_HOST}:${SERVICE_PORTS[tts]:-8880}"
+[[ "$ENABLE_WORKFLOWS" == "true" ]] && echo "  • n8n:           http://${DISPLAY_HOST}:${SERVICE_PORTS[n8n]:-5678}"
+[[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && echo "  • Qdrant:        http://${DISPLAY_HOST}:${SERVICE_PORTS[qdrant]:-6333}"
 echo ""
 
 # Configuration summary
@@ -383,32 +400,34 @@ print("ok" if values.get("setupComplete") and has_model and prefs.get("defaultCh
 fi
 
 if command -v ods_readiness_summary >/dev/null 2>&1; then
-    _dashboard_url="http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
+    # Health probes hit 127.0.0.1 (local curl checks); the display URL (4th
+    # field) uses DISPLAY_HOST so operators see the LAN IP under --lan.
+    _dashboard_url="http://${DISPLAY_HOST}:${SERVICE_PORTS[dashboard]:-3001}"
     {
         printf 'Dashboard|http://127.0.0.1:%s%s|%s|%s\n' \
             "${SERVICE_PORTS[dashboard]:-3001}" "${SERVICE_HEALTH[dashboard]:-/}" "$(sr_container dashboard)" "$_dashboard_url"
         printf 'Chat UI (Open WebUI)|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[open-webui]:-3000}" "${SERVICE_HEALTH[open-webui]:-/}" "$(sr_container open-webui)" "http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
+            "${SERVICE_PORTS[open-webui]:-3000}" "${SERVICE_HEALTH[open-webui]:-/}" "$(sr_container open-webui)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[open-webui]:-3000}"
         printf 'llama-server|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[llama-server]:-8080}" "${SERVICE_HEALTH[llama-server]:-/health}" "$(sr_container llama-server)" "http://localhost:${SERVICE_PORTS[llama-server]:-8080}/v1"
+            "${SERVICE_PORTS[llama-server]:-8080}" "${SERVICE_HEALTH[llama-server]:-/health}" "$(sr_container llama-server)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[llama-server]:-8080}/v1"
         printf 'Dashboard API|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[dashboard-api]:-3002}" "${SERVICE_HEALTH[dashboard-api]:-/health}" "$(sr_container dashboard-api)" "http://localhost:${SERVICE_PORTS[dashboard-api]:-3002}"
+            "${SERVICE_PORTS[dashboard-api]:-3002}" "${SERVICE_HEALTH[dashboard-api]:-/health}" "$(sr_container dashboard-api)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[dashboard-api]:-3002}"
         printf 'LiteLLM|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[litellm]:-4000}" "${SERVICE_HEALTH[litellm]:-/health/readiness}" "$(sr_container litellm)" "http://localhost:${SERVICE_PORTS[litellm]:-4000}"
+            "${SERVICE_PORTS[litellm]:-4000}" "${SERVICE_HEALTH[litellm]:-/health/readiness}" "$(sr_container litellm)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[litellm]:-4000}"
         [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && printf 'Perplexica|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[perplexica]:-3004}" "${SERVICE_HEALTH[perplexica]:-/}" "$(sr_container perplexica)" "http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
+            "${SERVICE_PORTS[perplexica]:-3004}" "${SERVICE_HEALTH[perplexica]:-/}" "$(sr_container perplexica)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[perplexica]:-3004}"
         [[ "$ENABLE_OPENCLAW" == "true" ]] && printf 'OpenClaw|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[openclaw]:-7860}" "${SERVICE_HEALTH[openclaw]:-/}" "$(sr_container openclaw)" "http://localhost:${SERVICE_PORTS[openclaw]:-7860}"
+            "${SERVICE_PORTS[openclaw]:-7860}" "${SERVICE_HEALTH[openclaw]:-/}" "$(sr_container openclaw)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[openclaw]:-7860}"
         [[ "$ENABLE_VOICE" == "true" ]] && printf 'Whisper (STT)|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[whisper]:-9000}" "${SERVICE_HEALTH[whisper]:-/health}" "$(sr_container whisper)" "http://localhost:${SERVICE_PORTS[whisper]:-9000}"
+            "${SERVICE_PORTS[whisper]:-9000}" "${SERVICE_HEALTH[whisper]:-/health}" "$(sr_container whisper)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[whisper]:-9000}"
         [[ "$ENABLE_VOICE" == "true" ]] && printf 'Kokoro (TTS)|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[tts]:-8880}" "${SERVICE_HEALTH[tts]:-/health}" "$(sr_container tts)" "http://localhost:${SERVICE_PORTS[tts]:-8880}"
+            "${SERVICE_PORTS[tts]:-8880}" "${SERVICE_HEALTH[tts]:-/health}" "$(sr_container tts)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[tts]:-8880}"
         [[ "$ENABLE_WORKFLOWS" == "true" ]] && printf 'n8n|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[n8n]:-5678}" "${SERVICE_HEALTH[n8n]:-/healthz}" "$(sr_container n8n)" "http://localhost:${SERVICE_PORTS[n8n]:-5678}"
+            "${SERVICE_PORTS[n8n]:-5678}" "${SERVICE_HEALTH[n8n]:-/healthz}" "$(sr_container n8n)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[n8n]:-5678}"
         [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && printf 'Qdrant|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[qdrant]:-6333}" "${SERVICE_HEALTH[qdrant]:-/}" "$(sr_container qdrant)" "http://localhost:${SERVICE_PORTS[qdrant]:-6333}"
+            "${SERVICE_PORTS[qdrant]:-6333}" "${SERVICE_HEALTH[qdrant]:-/}" "$(sr_container qdrant)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[qdrant]:-6333}"
         [[ "${ENABLE_COMFYUI:-}" == "true" ]] && printf 'ComfyUI|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[comfyui]:-8188}" "${SERVICE_HEALTH[comfyui]:-/}" "$(sr_container comfyui)" "http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
+            "${SERVICE_PORTS[comfyui]:-8188}" "${SERVICE_HEALTH[comfyui]:-/}" "$(sr_container comfyui)" "http://${DISPLAY_HOST}:${SERVICE_PORTS[comfyui]:-8188}"
         # Ensure the block exits 0 regardless of the trailing optional conditionals:
         # under set -e + pipefail, a false `[[ ENABLE_x ]] && printf` makes the block
         # return 1, which propagates through the pipe and trips the ERR trap.
@@ -427,26 +446,27 @@ echo -e "${GRN}─────────────────────�
 echo -e "${BGRN}  YOUR ODS IS LIVE${NC}"
 echo -e "${GRN}──────────────────────────────────────────────────────────────────────────────${NC}"
 echo ""
-echo -e "  ${BGRN}Dashboard${NC}    ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
-echo -e "  ${BGRN}Chat${NC}         ${WHT}http://localhost:${WEBUI_PORT}${NC}"
+echo -e "  ${BGRN}Dashboard${NC}    ${WHT}http://${DISPLAY_HOST}:${DASHBOARD_PORT}${NC}"
+echo -e "  ${BGRN}Chat${NC}         ${WHT}http://${DISPLAY_HOST}:${WEBUI_PORT}${NC}"
 [[ "$ENABLE_HERMES" == "true" ]] && \
-echo -e "  ${BGRN}Hermes${NC}       ${WHT}http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}${NC}  ${AMB}(magic-link gated)${NC}"
+echo -e "  ${BGRN}Hermes${NC}       ${WHT}http://${DISPLAY_HOST}:${SERVICE_PORTS[hermes-proxy]:-9120}${NC}  ${AMB}(magic-link gated)${NC}"
 [[ "$ENABLE_OPENCLAW" == "true" ]] && \
-echo -e "  ${BGRN}OpenClaw${NC}     ${WHT}http://localhost:${OPENCLAW_PORT}${NC}"
+echo -e "  ${BGRN}OpenClaw${NC}     ${WHT}http://${DISPLAY_HOST}:${OPENCLAW_PORT}${NC}"
 systemctl --user is-active opencode-web &>/dev/null && \
-echo -e "  ${BGRN}OpenCode${NC}     ${WHT}http://localhost:${OPENCODE_WEB_PORT}${NC}"
+echo -e "  ${BGRN}OpenCode${NC}     ${WHT}http://${DISPLAY_HOST}:${OPENCODE_WEB_PORT}${NC}"
 echo ""
 if [[ -n "$LOCAL_IP" ]]; then
     _bind=$(grep "^BIND_ADDRESS=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "127.0.0.1")
     [[ -z "$_bind" ]] && _bind="127.0.0.1"
     if [[ "$_bind" == "0.0.0.0" ]]; then
-        echo -e "  ${AMB}On your network:${NC}  ${WHT}http://${LOCAL_IP}:${DASHBOARD_PORT}${NC}"
+        # URLs above already carry the LAN IP; reassure that they work off-box.
+        echo -e "  ${AMB}Reachable on your LAN${NC} at ${WHT}${DISPLAY_HOST}${NC} — the URLs above work from any device on this network."
     else
         echo -e "  ${AMB}LAN access:${NC}      ${DIM}Reinstall with --lan or set BIND_ADDRESS=0.0.0.0 in .env${NC}"
     fi
 fi
 echo ""
-echo -e "  Start here → ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
+echo -e "  Start here → ${WHT}http://${DISPLAY_HOST}:${DASHBOARD_PORT}${NC}"
 echo -e "  The Dashboard shows all services, GPU status, and quick links."
 echo ""
 echo -e "${GRN}──────────────────────────────────────────────────────────────────────────────${NC}"
