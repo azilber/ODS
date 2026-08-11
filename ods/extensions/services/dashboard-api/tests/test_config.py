@@ -413,6 +413,53 @@ class TestLoadExtensionManifests:
         assert services["perplexica"]["llm"]["probe"]["path"] == "/api/search"
         assert services["privacy-shield"]["llm"]["probe"]["path"] == "/v1/chat/completions"
 
+    def test_core_services_load_on_cpu_backend(self):
+        """Core base-stack services must register on cpu hosts.
+
+        Regression for the Hermes dashboard card being unclickable on CPU
+        installs: the core manifests declared gpu_backends [amd, nvidia], so the
+        backend filter dropped them from SERVICES on GPU_BACKEND=cpu, and every
+        feature requiring dashboard-api / llama-server showed "services_needed".
+        They now use [all]; guard against a core manifest reintroducing a
+        backend-restrictive value.
+        """
+        services_dir = Path(__file__).resolve().parents[2]
+
+        services, _, _ = load_extension_manifests(services_dir, "cpu")
+
+        for core_id in ("llama-server", "dashboard-api", "dashboard", "open-webui"):
+            assert core_id in services, f"core service {core_id} missing on cpu backend"
+
+    def test_backend_filter_skips_restrictive_gpu_backends(self, tmp_path):
+        """Documents the filter: a service that omits the host backend and 'all' is skipped."""
+        restrictive = tmp_path / "gpu-only"
+        restrictive.mkdir()
+        (restrictive / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: gpu-only\n"
+            "  name: GPU Only\n"
+            "  port: 8080\n"
+            "  health: /health\n"
+            "  gpu_backends: [amd, nvidia]\n"
+        )
+        portable = tmp_path / "portable"
+        portable.mkdir()
+        (portable / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: portable\n"
+            "  name: Portable\n"
+            "  port: 8081\n"
+            "  health: /health\n"
+            "  gpu_backends: [all]\n"
+        )
+
+        services, _, _ = load_extension_manifests(tmp_path, "cpu")
+
+        assert "gpu-only" not in services
+        assert "portable" in services
+
     def test_external_port_default_zero_disables_external_port_fallback(self, tmp_path):
         svc_dir = tmp_path / "internal-service"
         svc_dir.mkdir()

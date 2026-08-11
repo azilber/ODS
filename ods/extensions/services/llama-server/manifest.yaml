@@ -17,7 +17,11 @@ service:
   ui_path: /
   health_timeout: 15
   type: docker
-  gpu_backends: [amd, nvidia]
+  # Core base-stack service — runs on every backend including CPU. Using
+  # [all] (not [amd, nvidia]) so the dashboard-api manifest loader registers it
+  # on cpu/apple hosts; otherwise config.py skips it and features that require
+  # it (e.g. Hermes) are permanently gated off. See config.py backend filter.
+  gpu_backends: [all]
   category: core
   depends_on: []
 
